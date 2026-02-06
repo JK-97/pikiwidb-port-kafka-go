@@ -27,6 +27,15 @@ go.work.sum
 # env file
 .env
 
+# build artifacts
+bin/
+
+# rsync file
+rsync_dump/
+
+# WAL file 
+wal*.log
+
 # Editor/IDE
 # .idea/
 # .vscode/

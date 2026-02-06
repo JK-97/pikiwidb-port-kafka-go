@@ -1,0 +1,21 @@
+{
+  "configurations": [
+    {
+      "name": "pikiwidb-cgo",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/internal/snapshot",
+        "/tmp/pikiwidb/src",
+        "/tmp/pikiwidb/src/storage",
+        "/tmp/pikiwidb/src/storage/include",
+        "/tmp/pikiwidb/src/pstd/include",
+        "/tmp/pikiwidb/deps/include"
+      ],
+      "defines": [],
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64"
+    }
+  ],
+  "version": 4
+}

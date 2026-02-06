@@ -1,0 +1,109 @@
+# pika-port-kafka（Go PB-only）配置示例（key=value）
+# 空行与以 # 或 ; 开头的行会被忽略。
+# 命令行 -set/-F/-X 可覆盖/追加配置。
+
+# master_ip: Pikiwi 主库 IP
+master_ip=127.0.0.1
+# master_port: Pikiwi 主库端口
+master_port=9221
+# local_ip: 本地绑定 IP（对 PB 回连可见）
+local_ip=127.0.0.1
+# local_port: 本地绑定端口（对 PB 回连可见）
+local_port=21333
+# passwd: Pikiwi 主库密码（可空）
+passwd=
+# db_name: 复制的 DB 名称（默认 db0）
+db_name=db0
+
+# log_path: 日志输出目录
+log_path=./log/
+# dump_path: DBSync/rsync 快照目录（rsync_dump）
+dump_path=./rsync_dump/
+# checkpoint_path: checkpoint.json 路径
+checkpoint_path=./checkpoint.json
+
+# kafka_brokers: Kafka bootstrap servers（逗号分隔）
+kafka_brokers=127.0.0.1:9092
+# kafka_client_id: Kafka client.id
+kafka_client_id=pika-port-kafka
+# kafka_stream_mode: dual（snapshot/binlog 分 topic）| single（合并到 single topic）
+kafka_stream_mode=dual
+# kafka_topic_snapshot: 快照 topic（dual 模式）
+kafka_topic_snapshot=pika.snapshot
+# kafka_topic_binlog: binlog topic（dual 模式）
+kafka_topic_binlog=pika.binlog
+# kafka_topic_single: single 模式 topic
+kafka_topic_single=pika.stream
+# kafka_message_max_bytes: 生产消息最大字节数
+kafka_message_max_bytes=1000000
+# kafka_enable_idempotence: 是否启用幂等
+kafka_enable_idempotence=true
+
+# wal_dir: WAL 目录
+wal_dir=./wal/
+# wal_segment_bytes: WAL 分段大小（字节）
+wal_segment_bytes=268435456
+# wal_sync_every: 每写入 N 条后 fsync（1=每条）
+wal_sync_every=1
+
+# snapshot_batch_num: 单条快照记录的元素批量大小（list/hash/set/zset 分批）
+snapshot_batch_num=512
+# snapshot_workers: 快照 worker 并发数
+snapshot_workers=4
+# snapshot_reader_mode: single | type（按类型拆 reader）
+snapshot_reader_mode=type
+# snapshot_reader_types: auto | string,list,hash,set,zset,stream
+snapshot_reader_types=auto
+# snapshot_reader_prefixes: auto | prefix 列表（逗号分隔，会自动补 *）
+snapshot_reader_prefixes=auto
+# snapshot_cgo_batch: 每次 Cgo 调用返回的记录数上限
+snapshot_cgo_batch=64
+# snapshot_scan_batch: Scan/Scanx 每次返回的 key 数（0=自动）
+snapshot_scan_batch=0
+# snapshot_scan_strategy: scan（cursor）| scanx/startkey（起始 key 扫描）
+snapshot_scan_strategy=scan
+# snapshot_list_tail_n: list 只取末尾 N 条（0=全量）
+snapshot_list_tail_n=0
+
+# sync_protocol: 在 Go 版本中忽略（PB only）
+sync_protocol=auto
+# wait_bgsave_timeout: 等待 master 完成 bgsave 的超时（秒）
+wait_bgsave_timeout=1800
+# pb_ack_delay_warn: ACK 延迟告警阈值（秒）
+pb_ack_delay_warn=10
+# pb_idle_timeout: PB binlog 超时无响应重连（秒）
+pb_idle_timeout=30
+# start_from_master: 启动时从 master 当前位点开始（未显式指定 filenum/offset 时生效）
+start_from_master=false
+# source_id: 上游标识（默认 master_ip:master_port）
+# source_id=127.0.0.1:9221
+# filenum: 显式指定 binlog 起点（需与 offset 同时指定）
+# filenum=0
+# offset: 显式指定 binlog 起点（需与 filenum 同时指定）
+# offset=0
+
+# binlog_workers: binlog worker 并发数
+binlog_workers=4
+# binlog_queue_size: binlog worker 队列大小
+binlog_queue_size=4096
+# window_slots: ring/窗口槽位（binlog 与 snapshot 共用上限）
+window_slots=64
+# sender_batch_size: Sender 单批发送最大记录数
+sender_batch_size=256
+# binlog_progress_interval: binlog 进度日志间隔（秒，0=关闭）
+binlog_progress_interval=5
+
+# args_encoding: args 编码（base64 | none）
+args_encoding=base64
+# raw_resp_encoding: raw_resp 编码（base64 | none）
+raw_resp_encoding=base64
+# include_raw_resp: 是否输出 raw_resp 字段
+include_raw_resp=true
+
+# filter: 过滤规则（可重复）
+# filter=key=dev:*;type=list;action=rpush
+# filter=/path/to/filters.conf
+# exclude: 排除 key 前缀（可重复，逗号分隔）
+# exclude=tmp:*,bad:*
+# exclude_keys: 排除 key 前缀（同 exclude）
+# exclude_keys=secret:*

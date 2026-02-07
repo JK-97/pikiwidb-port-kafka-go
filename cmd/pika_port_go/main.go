@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -120,15 +121,31 @@ func main() {
 		logger.Printf("filenum/offset must be specified together")
 		os.Exit(2)
 	}
-	if (filenumSpecified || offsetSpecified) && cfg.StartFromMaster {
-		logger.Printf("WARN start_from_master ignored because filenum/offset specified")
-		cfg.StartFromMaster = false
+	if filenumSpecified && cfg.StartFromMaster {
+		logger.Printf("start_from_master conflicts with filenum/offset; please choose one")
+		os.Exit(2)
+	}
+	if filenumSpecified && cfg.InitialFullSync {
+		logger.Printf("initial_full_sync conflicts with filenum/offset; please choose one")
+		os.Exit(2)
+	}
+	if cfg.StartFromMaster && cfg.InitialFullSync {
+		logger.Printf("start_from_master conflicts with initial_full_sync; please choose one")
+		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	ckptMgr := ckpt.NewManager(cfg.CheckpointPath, cfg.SourceID)
+
+	forceFullSync := false
+	if cfg.InitialFullSync && !cfg.StartFromMaster && !filenumSpecified {
+		if _, ok, err := ckptMgr.Load(); err == nil && !ok {
+			forceFullSync = true
+			logger.Printf("initial_full_sync enabled: no checkpoint found, will run full sync")
+		}
+	}
 
 	if cfg.StartFromMaster {
 		ri, err := info.FetchReplicationInfo(ctx, cfg.MasterIP, cfg.MasterPort, cfg.Passwd, 1500*time.Millisecond)
@@ -227,7 +244,19 @@ func main() {
 		AckDelayWarn:           cfg.PBAckDelayWarn,
 		IdleTimeout:            cfg.PBIdleTimeout,
 		WaitBgsaveTimeout:      cfg.WaitBgsaveTimeout,
-		Filter:                 filterObj,
+		ForceFullSync:          forceFullSync,
+		SyncPointPurgedAction:  cfg.SyncPointPurgedAction,
+		FetchMasterOffset: func(ctx context.Context) (repl.Offset, error) {
+			ri, err := info.FetchReplicationInfo(ctx, cfg.MasterIP, cfg.MasterPort, cfg.Passwd, 1500*time.Millisecond)
+			if err != nil || !ri.HasBinlogOffset {
+				if err == nil {
+					err = fmt.Errorf("master binlog_offset not available")
+				}
+				return repl.Offset{}, err
+			}
+			return repl.Offset{Filenum: ri.Filenum, Offset: ri.Offset}, nil
+		},
+		Filter: filterObj,
 		Builder: event.Builder{
 			ArgsEncoding:    cfg.ArgsEncoding,
 			RawRespEncoding: cfg.RawRespEncoding,

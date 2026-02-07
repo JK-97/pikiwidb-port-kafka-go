@@ -24,6 +24,51 @@ Notes:
 - `source_id` 默认是 `<master_ip:master_port>`；`checkpoint.json` 的 `source_id` 必须与运行配置一致，否则会报 `source_id mismatch` 并拒绝加载。
 - 若配置里显式指定 `filenum/offset`，将覆盖 `start_from_master` 的行为。
 
+## 场景验证（关键日志）
+
+以下场景已验证可用，日志为关键片段（示例）：
+
+### 1) 首次无 checkpoint → 自动全量
+
+配置：`initial_full_sync=true`，且无 `checkpoint.json`。
+
+日志示例：
+```
+initial_full_sync enabled: no checkpoint found, will run full sync
+pb repl: full sync forced on startup
+snapshot progress tag=done ...
+pb repl: enter binlog loop session_id=... start=...
+```
+
+### 2) 重启 → 直接增量
+
+前置：已有 `checkpoint.json`。
+
+日志示例：
+```
+pb repl: enter binlog loop session_id=... start=...
+binlog progress tag=running ...
+```
+
+### 3) 起点过期 → start_from_master
+
+配置：`sync_point_purged_action=start_from_master`，起点过期。
+
+日志示例：
+```
+pb repl: sync point purged, start from master binlog_offset=...
+pb repl: enter binlog loop session_id=... start=...
+```
+
+### 4) 起点过期 → pause
+
+配置：`sync_point_purged_action=pause`，起点过期。
+
+日志示例：
+```
+pb repl: sync point purged, action=pause; waiting for operator
+```
+
 ## 常用启动方式（手动）
 
 ### 1) 仅增量同步（从主库当前位点开始）

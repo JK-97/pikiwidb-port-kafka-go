@@ -90,8 +90,11 @@ type Client struct {
 	Ckpt     *ckpt.Manager
 	Wal      *wal.Writer
 
-	Rsync2Timeout     time.Duration
-	WaitBgsaveTimeout time.Duration
+	Rsync2Timeout         time.Duration
+	WaitBgsaveTimeout     time.Duration
+	ForceFullSync         bool
+	SyncPointPurgedAction string
+	FetchMasterOffset     func(ctx context.Context) (Offset, error)
 
 	Snapshot SnapshotRunner
 
@@ -171,15 +174,12 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		start := c.getStartOffset()
-		sessionID, replyCode, err := c.sendTrySync(conn, localIP, localPort, start)
-		if err != nil {
-			c.Log.Printf("pb repl: TrySync failed: %v", err)
-			_ = conn.Close()
-			sleepContext(ctx, time.Second)
-			continue
-		}
+		var sessionID int32
+		var replyCode innermessage.InnerResponse_TrySync_ReplyCode
 
-		if replyCode == innermessage.InnerResponse_TrySync_kSyncPointBePurged {
+		if c.ForceFullSync {
+			c.Log.Printf("pb repl: full sync forced on startup")
+			start = Offset{Filenum: 0, Offset: 0}
 			if _, err := c.sendDBSync(conn, localIP, localPort, start); err != nil {
 				c.Log.Printf("pb repl: DBSync failed: %v", err)
 				_ = conn.Close()
@@ -194,6 +194,7 @@ func (c *Client) Run(ctx context.Context) error {
 				continue
 			}
 			_ = conn.Close()
+			c.ForceFullSync = false
 
 			conn, err = c.connectRepl()
 			if err != nil {
@@ -213,11 +214,141 @@ func (c *Client) Run(ctx context.Context) error {
 				continue
 			}
 			start = newOffset
-		} else if replyCode != innermessage.InnerResponse_TrySync_kOk {
-			c.Log.Printf("pb repl: TrySync error code %v", replyCode)
-			_ = conn.Close()
-			sleepContext(ctx, time.Second)
-			continue
+		} else {
+			sessionID, replyCode, err = c.sendTrySync(conn, localIP, localPort, start)
+			if err != nil {
+				c.Log.Printf("pb repl: TrySync failed: %v", err)
+				_ = conn.Close()
+				sleepContext(ctx, time.Second)
+				continue
+			}
+
+			if replyCode == innermessage.InnerResponse_TrySync_kSyncPointBePurged {
+				action := strings.TrimSpace(strings.ToLower(c.SyncPointPurgedAction))
+				if action == "" {
+					action = "full_sync"
+				}
+				switch action {
+				case "full_sync":
+					if _, err := c.sendDBSync(conn, localIP, localPort, start); err != nil {
+						c.Log.Printf("pb repl: DBSync failed: %v", err)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					newOffset, err := c.performFullSync(ctx)
+					if err != nil {
+						c.Log.Printf("pb repl: full sync failed: %v", err)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					_ = conn.Close()
+
+					conn, err = c.connectRepl()
+					if err != nil {
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					if err := c.sendMetaSync(conn, localIP, localPort); err != nil {
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					sessionID, replyCode, err = c.sendTrySync(conn, localIP, localPort, newOffset)
+					if err != nil || replyCode != innermessage.InnerResponse_TrySync_kOk {
+						c.Log.Printf("pb repl: TrySync after full sync failed: err=%v reply=%v", err, replyCode)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					start = newOffset
+				case "start_from_master":
+					if c.FetchMasterOffset == nil {
+						c.Log.Printf("pb repl: sync point purged but FetchMasterOffset not configured")
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					masterOffset, err := c.FetchMasterOffset(ctx)
+					if err != nil {
+						c.Log.Printf("pb repl: fetch master binlog_offset failed: %v", err)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					c.Log.Printf("pb repl: sync point purged, start from master binlog_offset=%d:%d", masterOffset.Filenum, masterOffset.Offset)
+					_ = conn.Close()
+
+					conn, err = c.connectRepl()
+					if err != nil {
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					if err := c.sendMetaSync(conn, localIP, localPort); err != nil {
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					sessionID, replyCode, err = c.sendTrySync(conn, localIP, localPort, masterOffset)
+					if err != nil || replyCode != innermessage.InnerResponse_TrySync_kOk {
+						c.Log.Printf("pb repl: TrySync after start_from_master failed: err=%v reply=%v", err, replyCode)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					start = masterOffset
+				case "pause":
+					c.Log.Printf("pb repl: sync point purged, action=pause; waiting for operator")
+					_ = conn.Close()
+					for {
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
+						sleepContext(ctx, time.Second)
+					}
+				default:
+					c.Log.Printf("pb repl: unknown sync_point_purged_action=%q, fallback to full_sync", action)
+					if _, err := c.sendDBSync(conn, localIP, localPort, start); err != nil {
+						c.Log.Printf("pb repl: DBSync failed: %v", err)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					newOffset, err := c.performFullSync(ctx)
+					if err != nil {
+						c.Log.Printf("pb repl: full sync failed: %v", err)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					_ = conn.Close()
+
+					conn, err = c.connectRepl()
+					if err != nil {
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					if err := c.sendMetaSync(conn, localIP, localPort); err != nil {
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					sessionID, replyCode, err = c.sendTrySync(conn, localIP, localPort, newOffset)
+					if err != nil || replyCode != innermessage.InnerResponse_TrySync_kOk {
+						c.Log.Printf("pb repl: TrySync after full sync failed: err=%v reply=%v", err, replyCode)
+						_ = conn.Close()
+						sleepContext(ctx, time.Second)
+						continue
+					}
+					start = newOffset
+				}
+			} else if replyCode != innermessage.InnerResponse_TrySync_kOk {
+				c.Log.Printf("pb repl: TrySync error code %v", replyCode)
+				_ = conn.Close()
+				sleepContext(ctx, time.Second)
+				continue
+			}
 		}
 
 		if err := c.binlogLoop(ctx, conn, localIP, localPort, start, sessionID); err != nil {

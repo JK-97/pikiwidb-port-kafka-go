@@ -77,7 +77,11 @@ wait_bgsave_timeout=1800
 pb_ack_delay_warn=10
 # pb_idle_timeout: PB binlog 超时无响应重连（秒）
 pb_idle_timeout=30
-# start_from_master: 启动时从 master 当前位点开始（未显式指定 filenum/offset 时生效）
+# initial_full_sync: 首次无 checkpoint 文件时自动全量（仅判断文件是否存在；与 start_from_master/filenum/offset 互斥）
+initial_full_sync=true
+# sync_point_purged_action: full_sync | start_from_master | pause（当起点过期时触发）
+sync_point_purged_action=full_sync
+# start_from_master: 启动时从 master 当前位点开始（与 initial_full_sync/filenum/offset 互斥）
 start_from_master=false
 # source_id: 上游标识（默认 master_ip:master_port）
 # source_id=127.0.0.1:9221
@@ -85,6 +89,9 @@ start_from_master=false
 # filenum=0
 # offset: 显式指定 binlog 起点（需与 filenum 同时指定）
 # offset=0
+# 说明：
+# - filenum/offset 显式指定时优先级最高，但与 initial_full_sync/start_from_master 互斥
+# - initial_full_sync 仅在无 checkpoint 且未指定 filenum/offset/start_from_master 时生效
 
 # binlog_workers: binlog worker 并发数
 binlog_workers=4

@@ -65,7 +65,9 @@ type Config struct {
 	RawRespEncoding event.PayloadEncoding
 	IncludeRawResp  bool
 
-	StartFromMaster bool
+	StartFromMaster       bool
+	InitialFullSync       bool
+	SyncPointPurgedAction string
 
 	SourceID string
 
@@ -130,7 +132,9 @@ func Default() Config {
 		RawRespEncoding: event.PayloadEncodingBase64,
 		IncludeRawResp:  true,
 
-		StartFromMaster: false,
+		StartFromMaster:       false,
+		InitialFullSync:       true,
+		SyncPointPurgedAction: "full_sync",
 	}
 }
 
@@ -425,6 +429,14 @@ func applyValue(key, value string, cfg *Config, result *LoadResult) error {
 			return err
 		}
 		cfg.StartFromMaster = b
+	case "initial_full_sync":
+		b, err = parseBool(value)
+		if err != nil {
+			return err
+		}
+		cfg.InitialFullSync = b
+	case "sync_point_purged_action":
+		cfg.SyncPointPurgedAction = strings.ToLower(strings.TrimSpace(value))
 	case "source_id":
 		cfg.SourceID = value
 	case "db_name":

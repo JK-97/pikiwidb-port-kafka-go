@@ -18,6 +18,7 @@ import (
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/filter"
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/info"
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/kafka"
+	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/logging"
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/repl"
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/snapshot"
 	"github.com/OpenAtomFoundation/pikiwidb-port-kafka-go/internal/wal"
@@ -86,6 +87,18 @@ func main() {
 
 	for _, w := range loadRes.Warnings {
 		logger.Printf("WARN %s", w)
+	}
+
+	if cfg.LogPath != "" {
+		rot, err := logging.NewRotatingFile(cfg.LogPath, "pika_port_go", cfg.LogRotateInterval)
+		if err != nil {
+			logger.Printf("log init failed: %v", err)
+		} else {
+			logger.SetOutput(logging.MultiWriter(os.Stdout, rot))
+			defer rot.Close()
+		}
+	} else {
+		logger.SetOutput(os.Stdout)
 	}
 
 	if cfg.MasterIP == "" || cfg.MasterPort == 0 {

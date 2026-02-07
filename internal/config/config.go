@@ -21,9 +21,10 @@ type Config struct {
 
 	DBName string
 
-	LogPath        string
-	DumpPath       string
-	CheckpointPath string
+	LogPath           string
+	LogRotateInterval time.Duration
+	DumpPath          string
+	CheckpointPath    string
 
 	KafkaBrokers           string
 	KafkaClientID          string
@@ -83,14 +84,15 @@ type LoadResult struct {
 
 func Default() Config {
 	return Config{
-		LocalIP:        "127.0.0.1",
-		LocalPort:      0,
-		MasterIP:       "127.0.0.1",
-		MasterPort:     0,
-		DBName:         "db0",
-		LogPath:        "./log/",
-		DumpPath:       "./rsync_dump/",
-		CheckpointPath: "./checkpoint.json",
+		LocalIP:           "127.0.0.1",
+		LocalPort:         0,
+		MasterIP:          "127.0.0.1",
+		MasterPort:        0,
+		DBName:            "db0",
+		LogPath:           "./log/",
+		LogRotateInterval: 24 * time.Hour,
+		DumpPath:          "./rsync_dump/",
+		CheckpointPath:    "./checkpoint.json",
 
 		KafkaClientID:          "pika-port-kafka",
 		KafkaStreamMode:        "dual",
@@ -239,6 +241,16 @@ func applyValue(key, value string, cfg *Config, result *LoadResult) error {
 		}
 	case "log_path":
 		cfg.LogPath = normalizePath(value)
+	case "log_rotate_interval", "log_rotate_interval_sec":
+		i64, err = parseInt64(value)
+		if err != nil {
+			return fmt.Errorf("invalid log_rotate_interval")
+		}
+		if i64 <= 0 {
+			cfg.LogRotateInterval = 0
+		} else {
+			cfg.LogRotateInterval = time.Duration(i64) * time.Second
+		}
 	case "dump_path":
 		cfg.DumpPath = normalizePath(value)
 	case "checkpoint_path":

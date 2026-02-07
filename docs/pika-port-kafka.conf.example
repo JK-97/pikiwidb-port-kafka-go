@@ -17,6 +17,8 @@ db_name=db0
 
 # log_path: 日志输出目录
 log_path=./log/
+# log_rotate_interval: 日志按时间滚动（秒，0=不滚动）
+log_rotate_interval=86400
 # dump_path: DBSync/rsync 快照目录（rsync_dump）
 dump_path=./rsync_dump/
 # checkpoint_path: checkpoint.json 路径

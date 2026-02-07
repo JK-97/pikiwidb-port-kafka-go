@@ -45,9 +45,10 @@ type Config struct {
 	PBAckDelayWarn time.Duration
 	PBIdleTimeout  time.Duration
 
-	WalDir          string
-	WalSegmentBytes int64
-	WalSyncEvery    int
+	WalDir            string
+	WalSegmentBytes   int64
+	WalSyncEvery      int
+	WalRetainSegments int
 
 	SnapshotBatchNum       int
 	SnapshotWorkers        int
@@ -110,9 +111,10 @@ func Default() Config {
 		PBAckDelayWarn: 10 * time.Second,
 		PBIdleTimeout:  30 * time.Second,
 
-		WalDir:          "./wal/",
-		WalSegmentBytes: 256 * 1024 * 1024,
-		WalSyncEvery:    1,
+		WalDir:            "./wal/",
+		WalSegmentBytes:   256 * 1024 * 1024,
+		WalSyncEvery:      1,
+		WalRetainSegments: 2,
 
 		SnapshotBatchNum:     512,
 		SnapshotWorkers:      4,
@@ -381,6 +383,12 @@ func applyValue(key, value string, cfg *Config, result *LoadResult) error {
 			return fmt.Errorf("invalid wal_sync_every")
 		}
 		cfg.WalSyncEvery = int(i64)
+	case "wal_retain_segments":
+		i64, err = parseInt64(value)
+		if err != nil || i64 <= 0 {
+			return fmt.Errorf("invalid wal_retain_segments")
+		}
+		cfg.WalRetainSegments = int(i64)
 	case "args_encoding":
 		enc, err := parsePayloadEncoding(value)
 		if err != nil {

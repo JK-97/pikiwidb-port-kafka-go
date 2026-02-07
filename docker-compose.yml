@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  pikiwidb-port-kafka-go:
+    build:
+      context: .
+    container_name: pikiwidb-port-kafka-go
+    network_mode: "host"
+    restart: unless-stopped
+    working_dir: /opt/pikiwidb-port
+    volumes:
+      - ./pika-port-kafka.conf:/opt/pikiwidb-port/pika-port-kafka.conf:ro
+      # checkpoint 只能挂载目录（避免 file busy），配置里 checkpoint_path 指向该目录下的文件
+      # e.g. checkpoint_path=/opt/pikiwidb-port/checkpoint/checkpoint.json
+      - ./checkpoint:/opt/pikiwidb-port/checkpoint
+      - ./log:/opt/pikiwidb-port/log
+      - ./rsync_dump:/opt/pikiwidb-port/rsync_dump
+      - ./wal:/opt/pikiwidb-port/wal
+    command:
+      - "-C"
+      - "/opt/pikiwidb-port/pika-port-kafka.conf"

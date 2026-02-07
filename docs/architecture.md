@@ -176,7 +176,7 @@
 
 ## 9. WAL 设计（实际实现）
 
-- 文件名：`wal-00000001.log`、`wal-00000002.log` ...
+- 文件名：`wal-<start_filenum>-<start_offset>-<segment>.log`（例如 `wal-00000267-00000000000045044585-00000001.log`）。
 - 分段大小：`wal_segment_bytes`（默认 256MB）。
 - 记录结构（小端，固定头 56 bytes）：
 
@@ -201,6 +201,15 @@ struct WalRecordHeader {
 ```
 
 - 当前只写 **BINLOG_RAW**（payload = PB binlog 原始 bytes）。
+
+### 9.1 WAL 清理（当前实现）
+
+- **文件命名**：`wal-<start_filenum>-<start_offset>-<segment>.log`（固定宽度，便于排序）。
+- **清理触发**：每次 rotate 后启动一个协程进行清理检查。
+- **删除规则**：
+  - 以 **AckCP(filenum, offset)** 为安全点；
+  - 仅删除 **完整落在 AckCP 之前** 的旧 segment；
+  - 保留最近 `wal_retain_segments` 个 segment。
 
 ---
 

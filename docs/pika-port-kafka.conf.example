@@ -45,6 +45,8 @@ wal_dir=./wal/
 wal_segment_bytes=268435456
 # wal_sync_every: 每写入 N 条后 fsync（1=每条）
 wal_sync_every=1
+# wal_retain_segments: 保留最近 N 个 WAL segment（按 AckCP 删除旧段）
+wal_retain_segments=2
 
 # snapshot_batch_num: 单条快照记录的元素批量大小（list/hash/set/zset 分批）
 snapshot_batch_num=512

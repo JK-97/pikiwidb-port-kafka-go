@@ -148,9 +148,16 @@ func main() {
 
 	go producer.RunDeliveryLoop(ctx)
 	walWriter, err := wal.OpenWriter(wal.Config{
-		Dir:          cfg.WalDir,
-		SegmentBytes: cfg.WalSegmentBytes,
-		SyncEvery:    cfg.WalSyncEvery,
+		Dir:            cfg.WalDir,
+		SegmentBytes:   cfg.WalSegmentBytes,
+		SyncEvery:      cfg.WalSyncEvery,
+		RetainSegments: cfg.WalRetainSegments,
+		AckPosProvider: func() (uint32, uint64) {
+			if pos, ok := ckptMgr.Ack(); ok {
+				return pos.Filenum, pos.Offset
+			}
+			return 0, 0
+		},
 	})
 	if err != nil {
 		logger.Printf("wal init failed: %v", err)

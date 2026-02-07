@@ -20,9 +20,11 @@ const (
 )
 
 type Config struct {
-	Dir          string
-	SegmentBytes int64
-	SyncEvery    int
+	Dir            string
+	SegmentBytes   int64
+	SyncEvery      int
+	RetainSegments int
+	AckPosProvider func() (uint32, uint64)
 }
 
 type State struct {
@@ -31,13 +33,19 @@ type State struct {
 }
 
 type Writer struct {
-	mu      sync.Mutex
-	cfg     Config
-	file    *os.File
-	segment uint32
-	offset  uint64
-	synced  int
-	crc     *crc32.Table
+	mu                  sync.Mutex
+	cfg                 Config
+	file                *os.File
+	path                string
+	segment             uint32
+	offset              uint64
+	segmentStartFilenum uint32
+	segmentStartOffset  uint64
+	synced              int
+	crc                 *crc32.Table
+
+	gcMu      sync.Mutex
+	gcRunning bool
 }
 
 func OpenWriter(cfg Config) (*Writer, error) {
@@ -50,20 +58,26 @@ func OpenWriter(cfg Config) (*Writer, error) {
 	if cfg.SyncEvery <= 0 {
 		cfg.SyncEvery = 1
 	}
+	if cfg.RetainSegments <= 0 {
+		cfg.RetainSegments = 2
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
 		return nil, err
 	}
 
-	segment, offset, f, err := openLatestSegment(cfg.Dir, cfg.SegmentBytes)
+	segment, offset, startFilenum, startOffset, path, f, err := openLatestSegment(cfg.Dir, cfg.SegmentBytes)
 	if err != nil {
 		return nil, err
 	}
 	return &Writer{
-		cfg:     cfg,
-		file:    f,
-		segment: segment,
-		offset:  offset,
-		crc:     crc32.MakeTable(crc32.Castagnoli),
+		cfg:                 cfg,
+		file:                f,
+		path:                path,
+		segment:             segment,
+		offset:              offset,
+		segmentStartFilenum: startFilenum,
+		segmentStartOffset:  startOffset,
+		crc:                 crc32.MakeTable(crc32.Castagnoli),
 	}, nil
 }
 
@@ -86,9 +100,20 @@ func (w *Writer) AppendBinlog(epoch uint32, seq uint64, filenum uint32, offset u
 	if w.file == nil {
 		return State{}, fmt.Errorf("wal not open")
 	}
+	if w.offset == 0 && w.segmentStartFilenum == 0 && w.segmentStartOffset == 0 {
+		newPath := filepath.Join(w.cfg.Dir, segmentName(w.segment, filenum, offset))
+		if w.path != "" && w.path != newPath {
+			if err := os.Rename(w.path, newPath); err != nil {
+				return State{}, err
+			}
+			w.path = newPath
+		}
+		w.segmentStartFilenum = filenum
+		w.segmentStartOffset = offset
+	}
 	recordLen := uint64(HeaderLen) + uint64(len(payload))
 	if w.cfg.SegmentBytes > 0 && w.offset+recordLen > uint64(w.cfg.SegmentBytes) {
-		if err := w.rotateLocked(); err != nil {
+		if err := w.rotateLocked(filenum, offset); err != nil {
 			return State{}, err
 		}
 	}
@@ -135,75 +160,194 @@ func (w *Writer) buildHeader(epoch uint32, seq uint64, filenum uint32, offset ui
 	return buf
 }
 
-func (w *Writer) rotateLocked() error {
+func (w *Writer) rotateLocked(startFilenum uint32, startOffset uint64) error {
 	if w.file != nil {
 		_ = w.file.Sync()
 		_ = w.file.Close()
 	}
 	w.segment++
-	path := filepath.Join(w.cfg.Dir, segmentName(w.segment))
+	path := filepath.Join(w.cfg.Dir, segmentName(w.segment, startFilenum, startOffset))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	w.file = f
+	w.path = path
 	w.offset = 0
 	w.synced = 0
+	w.segmentStartFilenum = startFilenum
+	w.segmentStartOffset = startOffset
+	w.triggerGC()
 	return nil
 }
 
-func openLatestSegment(dir string, segmentBytes int64) (uint32, uint64, *os.File, error) {
+type walFile struct {
+	segment      uint32
+	startFilenum uint32
+	startOffset  uint64
+	path         string
+}
+
+func openLatestSegment(dir string, segmentBytes int64) (uint32, uint64, uint32, uint64, string, *os.File, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, 0, "", nil, err
 	}
-	var segments []uint32
+	var files []walFile
 	for _, ent := range entries {
 		if ent.IsDir() {
 			continue
 		}
 		name := ent.Name()
-		if !strings.HasPrefix(name, "wal-") || !strings.HasSuffix(name, ".log") {
+		seg, startFilenum, startOffset, ok := parseSegmentName(name)
+		if !ok {
 			continue
 		}
-		var seg uint32
-		_, err := fmt.Sscanf(name, "wal-%08d.log", &seg)
-		if err != nil {
-			continue
-		}
-		segments = append(segments, seg)
+		files = append(files, walFile{
+			segment:      seg,
+			startFilenum: startFilenum,
+			startOffset:  startOffset,
+			path:         filepath.Join(dir, name),
+		})
 	}
-	if len(segments) == 0 {
-		path := filepath.Join(dir, segmentName(1))
+	if len(files) == 0 {
+		path := filepath.Join(dir, segmentName(1, 0, 0))
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
-			return 0, 0, nil, err
+			return 0, 0, 0, 0, "", nil, err
 		}
-		return 1, 0, f, nil
+		return 1, 0, 0, 0, path, f, nil
 	}
-	sort.Slice(segments, func(i, j int) bool { return segments[i] < segments[j] })
-	seg := segments[len(segments)-1]
-	path := filepath.Join(dir, segmentName(seg))
+	sort.Slice(files, func(i, j int) bool { return files[i].segment < files[j].segment })
+	last := files[len(files)-1]
+	path := last.path
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, 0, "", nil, err
 	}
 	size := info.Size()
 	if segmentBytes > 0 && size >= segmentBytes {
-		path = filepath.Join(dir, segmentName(seg+1))
+		path = filepath.Join(dir, segmentName(last.segment+1, 0, 0))
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 		if err != nil {
-			return 0, 0, nil, err
+			return 0, 0, 0, 0, "", nil, err
 		}
-		return seg + 1, 0, f, nil
+		return last.segment + 1, 0, 0, 0, path, f, nil
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return 0, 0, nil, err
+		return 0, 0, 0, 0, "", nil, err
 	}
-	return seg, uint64(size), f, nil
+	return last.segment, uint64(size), last.startFilenum, last.startOffset, path, f, nil
 }
 
-func segmentName(segment uint32) string {
-	return fmt.Sprintf("wal-%08d.log", segment)
+func segmentName(segment uint32, startFilenum uint32, startOffset uint64) string {
+	return fmt.Sprintf("wal-%08d-%020d-%08d.log", startFilenum, startOffset, segment)
+}
+
+func parseSegmentName(name string) (uint32, uint32, uint64, bool) {
+	if !strings.HasPrefix(name, "wal-") || !strings.HasSuffix(name, ".log") {
+		return 0, 0, 0, false
+	}
+	var seg uint32
+	var startFilenum uint32
+	var startOffset uint64
+	if _, err := fmt.Sscanf(name, "wal-%08d-%020d-%08d.log", &startFilenum, &startOffset, &seg); err == nil {
+		return seg, startFilenum, startOffset, true
+	}
+	return 0, 0, 0, false
+}
+
+func (w *Writer) triggerGC() {
+	if w.cfg.AckPosProvider == nil {
+		return
+	}
+	w.gcMu.Lock()
+	if w.gcRunning {
+		w.gcMu.Unlock()
+		return
+	}
+	w.gcRunning = true
+	w.gcMu.Unlock()
+
+	go func() {
+		defer func() {
+			w.gcMu.Lock()
+			w.gcRunning = false
+			w.gcMu.Unlock()
+		}()
+		w.cleanupSegments()
+	}()
+}
+
+func (w *Writer) cleanupSegments() {
+	ackFilenum := uint32(0)
+	ackOffset := uint64(0)
+	if w.cfg.AckPosProvider != nil {
+		ackFilenum, ackOffset = w.cfg.AckPosProvider()
+	}
+	if ackFilenum == 0 && ackOffset == 0 {
+		return
+	}
+	retain := w.cfg.RetainSegments
+	if retain <= 0 {
+		retain = 2
+	}
+
+	entries, err := os.ReadDir(w.cfg.Dir)
+	if err != nil {
+		return
+	}
+	files := make([]walFile, 0, len(entries))
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		seg, startFilenum, startOffset, ok := parseSegmentName(ent.Name())
+		if !ok {
+			continue
+		}
+		files = append(files, walFile{
+			segment:      seg,
+			startFilenum: startFilenum,
+			startOffset:  startOffset,
+			path:         filepath.Join(w.cfg.Dir, ent.Name()),
+		})
+	}
+	if len(files) <= retain {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].startFilenum != files[j].startFilenum {
+			return files[i].startFilenum < files[j].startFilenum
+		}
+		if files[i].startOffset != files[j].startOffset {
+			return files[i].startOffset < files[j].startOffset
+		}
+		return files[i].segment < files[j].segment
+	})
+	limit := len(files) - retain
+	for i := 0; i < limit; i++ {
+		cur := files[i]
+		next := files[i+1]
+		if cur.startFilenum == 0 && cur.startOffset == 0 {
+			continue
+		}
+		if next.startFilenum == 0 && next.startOffset == 0 {
+			continue
+		}
+		if newerOrEqualPos(ackFilenum, ackOffset, next.startFilenum, next.startOffset) {
+			_ = os.Remove(cur.path)
+		}
+	}
+}
+
+func newerOrEqualPos(aFile uint32, aOff uint64, bFile uint32, bOff uint64) bool {
+	if aFile > bFile {
+		return true
+	}
+	if aFile < bFile {
+		return false
+	}
+	return aOff >= bOff
 }
